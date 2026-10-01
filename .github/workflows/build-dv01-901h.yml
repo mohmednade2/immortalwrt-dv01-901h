@@ -77,30 +77,31 @@ jobs:
         DTS_DIR="openwrt/target/linux/ipq40xx/files/arch/arm/boot/dts/qcom"
         mkdir -p "$DTS_DIR"
         cp dts/qcom-ipq4019-dv01-901h.dts "$DTS_DIR/"
-        echo "DTS copied to: $DTS_DIR"
+        echo "✅ DTS copied to: $DTS_DIR"
+        ls -la "$DTS_DIR/"
 
         cp .config openwrt/.config
-        echo "Config copied"
+        echo "✅ .config copied"
 
         if [ -d "base-files" ]; then
           cp -r base-files/* openwrt/target/linux/ipq40xx/base-files/ 2>/dev/null || true
-          echo "base-files copied"
+          echo "✅ base-files copied"
         fi
 
         if [ -f "image/generic.mk.patch" ]; then
           echo "" >> openwrt/target/linux/ipq40xx/image/generic.mk
           echo "" >> openwrt/target/linux/ipq40xx/image/generic.mk
           cat image/generic.mk.patch >> openwrt/target/linux/ipq40xx/image/generic.mk
-          echo "Device definition appended"
+          echo "✅ Device definition appended"
         fi
 
         echo "=== Verifying davolink_dv01-901h in generic.mk ==="
         grep -n "davolink_dv01-901h" openwrt/target/linux/ipq40xx/image/generic.mk || {
-          echo "ERROR: davolink_dv01-901h NOT FOUND!"
+          echo "❌ ERROR: davolink_dv01-901h NOT FOUND!"
           tail -30 openwrt/target/linux/ipq40xx/image/generic.mk
           exit 1
         }
-        echo "Device definition verified"
+        echo "✅ Device definition verified"
 
     - name: Update Feeds
       run: |
@@ -114,11 +115,19 @@ jobs:
         make defconfig
         echo "=== Verifying device selection in .config ==="
         if ! grep -q "CONFIG_TARGET_ipq40xx_generic_DEVICE_davolink_dv01-901h=y" .config; then
-          echo "ERROR: Device NOT selected in .config!"
+          echo "❌ ERROR: Device NOT selected in .config!"
           grep "CONFIG_TARGET_ipq40xx_generic_DEVICE_" .config | head -20 || true
           exit 1
         fi
-        echo "Device selected successfully"
+        echo "✅ Device selected successfully"
+
+    - name: Show generic.mk Content
+      run: |
+        echo "=== Last 30 lines of generic.mk ==="
+        tail -30 openwrt/target/linux/ipq40xx/image/generic.mk
+        echo ""
+        echo "=== Searching for davolink in generic.mk ==="
+        grep -n "davolink" openwrt/target/linux/ipq40xx/image/generic.mk || echo "❌ NOT FOUND"
 
     - name: Download Sources
       run: |
@@ -126,40 +135,72 @@ jobs:
         make download -j$(nproc) 2>&1 | tee download.log || true
         find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
         find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
-        echo "Sources download completed"
+        echo "✅ Sources download step completed"
 
     - name: Compile Firmware
       run: |
         cd openwrt
         echo "=== Starting parallel build ==="
+        set -o pipefail
         if ! make -j$(nproc) 2>&1 | tee build.log; then
-          echo "Parallel build failed, retrying single thread..."
+          echo "❌ Parallel build failed, retrying single thread with verbose output..."
           make -j1 V=s 2>&1 | tee build_verbose.log
         fi
-        echo "Compile step completed"
+        echo "✅ Compile step completed"
+
+    - name: Show Build Errors (if failed)
+      if: failure()
+      run: |
+        cd openwrt
+        echo "════════════════════════════════════════"
+        echo "  BUILD FAILED - Showing diagnostics"
+        echo "════════════════════════════════════════"
+        echo ""
+        echo "=== Searching for ERROR in build.log ==="
+        grep -i "error" build.log 2>/dev/null | head -50 || echo "No 'error' found in build.log"
+        echo ""
+        echo "=== Searching for 'failed' in build.log ==="
+        grep -i "failed" build.log 2>/dev/null | head -30 || echo "No 'failed' found"
+        echo ""
+        echo "=== Last 100 lines of build.log ==="
+        tail -100 build.log 2>/dev/null || echo "build.log not found"
+        echo ""
+        echo "=== Last 100 lines of build_verbose.log (if exists) ==="
+        tail -100 build_verbose.log 2>/dev/null || echo "build_verbose.log not found"
+        echo ""
+        echo "=== Check if generic.mk still has our device ==="
+        grep -n "davolink_dv01-901h" target/linux/ipq40xx/image/generic.mk || echo "❌ NOT FOUND in generic.mk!"
+        echo ""
+        echo "=== Check DTS file location ==="
+        find target/linux/ipq40xx -name "*dv01*" 2>/dev/null || echo "DTS not found"
 
     - name: Verify Build
       run: |
         cd openwrt
         echo "=== Contents of bin/targets/ipq40xx/generic/ ==="
-        ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || echo "Directory not found!"
+        ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || echo "❌ Directory not found!"
 
         SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*dv01-901h*sysupgrade.bin" 2>/dev/null | head -1 || true)
         if [ -z "$SYSUPGRADE" ]; then
-          echo "No dv01-901h image found, checking generic..."
+          echo "⚠️ No dv01-901h image found, checking generic..."
           SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*sysupgrade.bin" 2>/dev/null | head -1 || true)
         fi
 
         if [ -z "$SYSUPGRADE" ]; then
-          echo "ERROR: No sysupgrade image found!"
-          ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
+          echo "❌ ERROR: No sysupgrade image found!"
+          echo ""
+          echo "=== Available files in bin/targets/ipq40xx/generic/ ==="
+          find bin/targets/ipq40xx/generic/ -type f 2>/dev/null || echo "No files"
+          echo ""
+          echo "=== Searching for any .bin files in whole bin/ ==="
+          find bin/ -name "*.bin" 2>/dev/null | head -20 || echo "No .bin files"
           exit 1
         fi
 
         SIZE=$(stat -c%s "$SYSUPGRADE")
-        echo "Image found: $SYSUPGRADE"
-        echo "Size: $(echo "scale=2; $SIZE / 1024 / 1024" | bc)MB"
-        echo "Build verified!"
+        echo "✅ Image found: $SYSUPGRADE"
+        echo "✅ Size: $(echo "scale=2; $SIZE / 1024 / 1024" | bc)MB"
+        echo "✅ Build verified!"
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -179,11 +220,11 @@ jobs:
     - name: Build Summary
       if: always()
       run: |
-        echo "======================================="
+        echo "═══════════════════════════════════════"
         echo "  Build Summary"
-        echo "======================================="
+        echo "═══════════════════════════════════════"
         echo "Status: ${{ job.status }}"
         echo "Branch: ${{ env.REPO_BRANCH }}"
         echo "Device: Davolink DV01-901H"
         echo "Run #:  ${{ github.run_number }}"
-        echo "======================================="
+        echo "═══════════════════════════════════════"
