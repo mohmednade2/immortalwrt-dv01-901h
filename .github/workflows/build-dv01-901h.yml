@@ -55,7 +55,7 @@ jobs:
           pkgconf python3 python3-pip python3-ply python3-docutils \
           python3-pyelftools qemu-utils re2c rsync scons \
           squashfs-tools subversion swig texinfo uglifyjs upx-ucl \
-          unzip vim wget xmlto xxd zlib1g-dev zstd
+          unzip vim wget xmlto xxd zlib1g-dev zstd bc
         sudo apt-get clean
 
     - name: Free Disk Space
@@ -74,26 +74,33 @@ jobs:
 
     - name: Copy Device Tree & Configs
       run: |
-        # Create device tree directory for kernel 6.6 (master/24.10)
         DTS_DIR="openwrt/target/linux/ipq40xx/files/arch/arm/boot/dts/qcom"
         mkdir -p "$DTS_DIR"
-
-        # Copy our DTS file
         cp dts/qcom-ipq4019-dv01-901h.dts "$DTS_DIR/"
         echo "DTS copied to: $DTS_DIR"
 
-        # Copy config
         cp .config openwrt/.config
+        echo "Config copied"
 
-        # Copy base-files (network config, board detection)
         if [ -d "base-files" ]; then
           cp -r base-files/* openwrt/target/linux/ipq40xx/base-files/ 2>/dev/null || true
+          echo "base-files copied"
         fi
 
-        # Copy device image profile
         if [ -f "image/generic.mk.patch" ]; then
+          echo "" >> openwrt/target/linux/ipq40xx/image/generic.mk
+          echo "" >> openwrt/target/linux/ipq40xx/image/generic.mk
           cat image/generic.mk.patch >> openwrt/target/linux/ipq40xx/image/generic.mk
+          echo "Device definition appended"
         fi
+
+        echo "=== Verifying davolink_dv01-901h in generic.mk ==="
+        grep -n "davolink_dv01-901h" openwrt/target/linux/ipq40xx/image/generic.mk || {
+          echo "ERROR: davolink_dv01-901h NOT FOUND!"
+          tail -30 openwrt/target/linux/ipq40xx/image/generic.mk
+          exit 1
+        }
+        echo "Device definition verified"
 
     - name: Update Feeds
       run: |
@@ -105,46 +112,53 @@ jobs:
       run: |
         cd openwrt
         make defconfig
-        # Verify our device is selected
-        grep "CONFIG_TARGET_ipq40xx_generic_DEVICE_davolink_dv01-901h" .config || {
-          echo "WARNING: Device not selected, checking available devices..."
-          grep "CONFIG_TARGET_ipq40xx_generic_DEVICE_" .config | head -5
-        }
+        echo "=== Verifying device selection in .config ==="
+        if ! grep -q "CONFIG_TARGET_ipq40xx_generic_DEVICE_davolink_dv01-901h=y" .config; then
+          echo "ERROR: Device NOT selected in .config!"
+          grep "CONFIG_TARGET_ipq40xx_generic_DEVICE_" .config | head -20 || true
+          exit 1
+        fi
+        echo "Device selected successfully"
 
     - name: Download Sources
       run: |
         cd openwrt
-        make download -j$(nproc) 2>&1 | tee download.log
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+        make download -j$(nproc) 2>&1 | tee download.log || true
+        find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
+        find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
+        echo "Sources download completed"
 
     - name: Compile Firmware
       run: |
         cd openwrt
-        make -j$(nproc) 2>&1 | tee build.log
-        if [ $? -ne 0 ]; then
+        echo "=== Starting parallel build ==="
+        if ! make -j$(nproc) 2>&1 | tee build.log; then
           echo "Parallel build failed, retrying single thread..."
           make -j1 V=s 2>&1 | tee build_verbose.log
         fi
+        echo "Compile step completed"
 
     - name: Verify Build
       run: |
         cd openwrt
-        SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*dv01-901h*sysupgrade.bin" 2>/dev/null | head -1)
+        echo "=== Contents of bin/targets/ipq40xx/generic/ ==="
+        ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || echo "Directory not found!"
+
+        SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*dv01-901h*sysupgrade.bin" 2>/dev/null | head -1 || true)
         if [ -z "$SYSUPGRADE" ]; then
-          echo "WARNING: No dv01-901h image found, checking generic..."
-          SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*sysupgrade.bin" | head -1)
+          echo "No dv01-901h image found, checking generic..."
+          SYSUPGRADE=$(find bin/targets/ipq40xx/generic/ -name "*sysupgrade.bin" 2>/dev/null | head -1 || true)
         fi
 
         if [ -z "$SYSUPGRADE" ]; then
           echo "ERROR: No sysupgrade image found!"
-          ls -la bin/targets/ipq40xx/generic/ || true
+          ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
           exit 1
         fi
 
         SIZE=$(stat -c%s "$SYSUPGRADE")
-        echo "Image: $SYSUPGRADE"
-        echo "Size: $(echo "$SIZE / 1024 / 1024" | bc)MB"
+        echo "Image found: $SYSUPGRADE"
+        echo "Size: $(echo "scale=2; $SIZE / 1024 / 1024" | bc)MB"
         echo "Build verified!"
 
     - name: Upload Artifacts
@@ -157,77 +171,19 @@ jobs:
           openwrt/bin/targets/ipq40xx/generic/*-initramfs*
           openwrt/bin/targets/ipq40xx/generic/*-factory*
           openwrt/build.log
+          openwrt/build_verbose.log
+          openwrt/download.log
         if-no-files-found: warn
         retention-days: 30
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      if: github.event.inputs.release == 'true' || (github.event_name == 'push' && contains(github.ref, 'refs/tags/'))
-      with:
-        files: |
-          openwrt/bin/targets/ipq40xx/generic/*-sysupgrade.bin
-          openwrt/bin/targets/ipq40xx/generic/*-initramfs*
-        body: |
-          ## ImmortalWrt for Davolink DV01-901H (KT-708)
-
-          **Build:** ${{ github.run_number }}
-          **Branch:** ${{ env.REPO_BRANCH }}
-          **Commit:** ${{ github.sha }}
-          **Date:** ${{ github.event.head_commit.timestamp || github.event.created_at }}
-
-          ### Device
-          - **Model:** Davolink DV01-901H / KT GiGA WiFi Wave 2
-          - **SoC:** Qualcomm IPQ4019 (Quad-core ARM @ 717MHz)
-          - **RAM:** 256MB DDR3
-          - **Flash:** 16MB NOR + 128MB NAND
-          - **WiFi:** QCA4019 2.4GHz + 5GHz
-          - **Ethernet:** QCA8075 (4x LAN + 1x WAN Gigabit)
-
-          ### Packages Included
-          - **Proxy:** xray-core, sing-box, luci-app-passwall2
-          - **AdBlock:** adblock, luci-app-adblock
-          - **Torrent:** transmission-daemon + web control
-          - **NAS:** samba4-server, USB storage (ext4/ntfs/exfat)
-          - **DNS:** mosdns, smartdns, dnsmasq-full
-          - **VPN:** WireGuard, OpenVPN
-          - **QoS:** nft-qos, sqm-scripts
-          - **Monitor:** nlbwmon, collectd, tcpdump, iperf3, htop
-          - **Tools:** ttyd, ddns-go, WOL, nmap, vim, nano
-          - **Theme:** luci-theme-argon
-
-          ### ⚠️ CRITICAL WARNINGS
-          1. **NEVER erase ART partition (0x170000)** - contains unique WiFi calibration!
-          2. **Backup ART before flashing!** Without it, WiFi is dead forever.
-          3. Test with initramfs via TFTP first before permanent flash.
-
-          ### Flashing Instructions
-          1. Connect UART (115200 baud, 3.3V)
-          2. Set PC to 192.168.1.2, run TFTP server
-          3. Copy `*-initramfs-fit-uImage.itb` to TFTP root
-          4. In U-Boot:
-          ```
-          setenv ipaddr 192.168.1.1
-          setenv serverip 192.168.1.2
-          tftpboot 0x82000000 *-initramfs-fit-uImage.itb
-          bootm 0x82000000
-          ```
-          5. If it boots, flash permanently:
-          ```
-          sysupgrade -n *-squashfs-nand-sysupgrade.bin
-          ```
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build Summary
       if: always()
       run: |
-        echo "═══════════════════════════════════════"
+        echo "======================================="
         echo "  Build Summary"
-        echo "═══════════════════════════════════════"
+        echo "======================================="
         echo "Status: ${{ job.status }}"
         echo "Branch: ${{ env.REPO_BRANCH }}"
         echo "Device: Davolink DV01-901H"
         echo "Run #:  ${{ github.run_number }}"
-        echo "═══════════════════════════════════════"
+        echo "======================================="
