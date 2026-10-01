@@ -2,9 +2,6 @@
 /*
  * Davolink DV01-901H (KT GiGA WiFi Wave 2 / KT-708)
  * Qualcomm IPQ4019 (IPQ40xx)
- * 
- * Device Tree Source extracted from stock firmware DTB
- * Compatible with ImmortalWrt master / openwrt-24.10
  */
 
 /dts-v1/;
@@ -34,7 +31,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x80000000 0x10000000>; /* 256MB DDR3 */
+		reg = <0x80000000 0x10000000>;
 	};
 
 	reserved-memory {
@@ -182,7 +179,6 @@
 				read-only;
 			};
 
-			/* ART partition - CONTAINS UNIQUE WIFI CALIBRATION DATA */
 			partition@170000 {
 				label = "ART";
 				reg = <0x170000 0x010000>;
@@ -232,7 +228,6 @@
 		};
 	};
 
-	/* SPI NAND Flash - 128MB */
 	spi-nand@1 {
 		compatible = "spi-nand";
 		reg = <1>;
